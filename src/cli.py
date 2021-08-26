@@ -1,9 +1,9 @@
 import click
-
+import sys
 # pylint: disable=unused-import
 import pretty_errors  # type: ignore
 from prometheus_client import Histogram
-
+from loguru import logger
 from .exporter import Exporter
 from .help import cmd_help
 
@@ -45,12 +45,27 @@ default_buckets_str = ",".join(map(str, Histogram.DEFAULT_BUCKETS))
     help="Buckets for runtime histogram",
 )
 @click.option(
+    "--queue-length-interval",
+    default=None,
+    type=int,
+    show_default=True,
+    help="Track length of queues (redis only)",
+)
+@click.option(
+    "--queue", '-q',
+    default=None,
+    show_default=True,
+    multiple=True,
+    type=str,
+    help="Declare queue names to observe",
+)
+@click.option(
     "--log-level",
     default="INFO",
     show_default=True,
 )
 def cli(  # pylint: disable=too-many-arguments
-    broker_url, broker_transport_option, retry_interval, port, buckets, log_level
+    broker_url, broker_transport_option, retry_interval, port, buckets, log_level, queue_length_interval, queue
 ):  # pylint: disable=unused-argument
     formatted_buckets = list(map(float, buckets.split(",")))
     ctx = click.get_current_context()

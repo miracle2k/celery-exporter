@@ -2,12 +2,13 @@
 import re
 import sys
 import time
-
+import json
 from celery import Celery
 from celery.events.state import State  # type: ignore
 from loguru import logger
+import collections
 from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
-
+import threading
 from .http_server import start_http_server
 
 
@@ -71,7 +72,7 @@ class Exporter:  # pylint: disable=too-many-instance-attributes
                 "Sent if the task failed, but will be retried in the future.",
                 ["name", "hostname"],
                 registry=self.registry,
-            ),
+            )
         }
         self.celery_worker_up = Gauge(
             "celery_worker_up",
@@ -91,6 +92,19 @@ class Exporter:  # pylint: disable=too-many-instance-attributes
             ["name", "hostname"],
             registry=self.registry,
             buckets=buckets or Histogram.DEFAULT_BUCKETS,
+        )
+        self.celery_task_queuetime = Histogram(
+            "celery_task_queuetime",
+            "Histogram of task queuetime measurements.",
+            ["name", "hostname"],
+            registry=self.registry,
+            buckets=buckets or Histogram.DEFAULT_BUCKETS,
+        )
+        self.queue_length = Gauge(
+            "celery_queue_length",
+            "Queue length",
+            ["queue"],
+            registry=self.registry,
         )
 
     def track_task_event(self, event):
@@ -119,6 +133,20 @@ class Exporter:  # pylint: disable=too-many-instance-attributes
                 counter.labels(**_labels).inc(0)
 
             logger.debug("Incremented metric='{}' labels='{}'", counter._name, labels)
+
+        if event["type"] == "task-started":
+            # XXX We'd like to maybe differentiate this by queue, but
+            # task.routing_key is always None, even though in redis it contains the
+            # queue name.            
+            if task.sent:  # Only if task_send_sent_event is enabled in Celer
+                queue_time = time.time() - task.sent
+                self.celery_task_queuetime.labels(**labels).observe(task.runtime)
+                logger.debug(
+                    "Observed metric='{}' labels='{}': {}s",
+                    self.celery_task_queuetime._name,
+                    labels,
+                    task.runtime,
+                )
 
         # observe task runtime
         if event["type"] == "task-succeeded":
@@ -177,6 +205,12 @@ class Exporter:  # pylint: disable=too-many-instance-attributes
         if self.retry_interval:
             logger.debug("Using retry_interval of {} seconds", self.retry_interval)
 
+        if click_params['queue_length_interval']:
+            self.queuelength_thread = QueueLengthMonitor(
+                self.app, click_params['queue_length_interval'], click_params['queue'] or ['celery'],
+                gauge=self.queue_length)
+            self.queuelength_thread.start()
+
         handlers = {
             "worker-heartbeat": self.track_worker_heartbeat,
             "worker-online": lambda event: self.track_worker_status(event, True),
@@ -214,3 +248,55 @@ def get_exception_class(exception_name: str):
     m = exception_pattern.match(exception_name)
     assert m
     return m.group(1)
+
+
+class QueueLengthMonitor(threading.Thread):
+
+    def __init__(self, app, interval, queues, gauge):
+        super(QueueLengthMonitor, self).__init__()
+        self.app = app
+        self.gauge = gauge
+        self.queues = queues
+        self.interval = interval
+        self.running = True
+
+    def run(self):
+        while self.running:
+            try:
+                lengths = collections.Counter()
+
+                with self.app.connection() as connection:
+                    pipe = connection.channel().client.pipeline(
+                        transaction=False)
+                    for queue in self.queues:
+                        # Not claimed by any worker yet
+                        pipe.llen(queue)
+                    # Claimed by worker but not acked/processed yet
+                    pipe.hvals('unacked')
+
+                    result = pipe.execute()
+
+                unacked = result.pop()
+                for task in unacked:
+                    data = json.loads(task.decode('utf-8'))
+                    queue = data[-1]
+                    lengths[queue] += 1
+
+                for llen, queue in zip(result, self.queues):
+                    lengths[queue] += llen
+
+                for queue, length in lengths.items():
+                    self.gauge.labels(queue).set(length)
+
+                time.sleep(self.interval)
+            except Exception as e:
+                import traceback
+                traceback.print_exc()
+
+                logger.error(
+                    'Uncaught exception, preventing thread from crashing: {}', e,
+                    exc_info=True)
+                time.sleep(1)
+
+    def stop(self):
+        self.running = False

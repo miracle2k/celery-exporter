@@ -140,12 +140,12 @@ class Exporter:  # pylint: disable=too-many-instance-attributes
             # queue name.            
             if task.sent:  # Only if task_send_sent_event is enabled in Celer
                 queue_time = time.time() - task.sent
-                self.celery_task_queuetime.labels(**labels).observe(task.runtime)
+                self.celery_task_queuetime.labels(**labels).observe(queue_time)
                 logger.debug(
                     "Observed metric='{}' labels='{}': {}s",
                     self.celery_task_queuetime._name,
                     labels,
-                    task.runtime,
+                    queue_time,
                 )
 
         # observe task runtime

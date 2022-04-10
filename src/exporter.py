@@ -246,7 +246,11 @@ exception_pattern = re.compile(r"^(\w+)\(")
 
 def get_exception_class(exception_name: str):
     m = exception_pattern.match(exception_name)
-    assert m
+    
+    # We have seen exception that fail to parse here, for example:
+    # <MaybeEncodingError: Error sending result: ''(1, <ExceptionInfo: ClientResponseError("RequestInfo(url=URL(\'https://ipfs.infura.io/ipfs/QmfFVuX4b9MCEDDvRu8vYYoHYcWcgN7T9LTi61PJtG48XD/metadata/8390396.json\'), method=\'GET\', headers=<CIMultiDictProxy(\'Host\': \'ipfs.infura.io\', \'Accept\': \'*/*\', \'Accept-Encoding\': \'gzip, deflate\', \'User-Agent\': \'Python/3.9 aiohttp/3.7.4.post0\')>, real_url=URL(\'https://ipfs.infura.io/ipfs/QmfFVuX4b9MCEDDvRu8vYYoHYcWcgN7T9LTi61PJtG48XD/metadata/8390396.json\'))", ())>, None)''. Reason: ''PicklingError("Can\'t pickle <class \'aiohttp.client_exceptions.ClientResponseError\'>: it\'s not the same object as aiohttp.client_exceptions.ClientResponseError")''.>
+    if not m:
+        return "__PrometheusExporterFailedToParseExceptionName"
     return m.group(1)
 
 
